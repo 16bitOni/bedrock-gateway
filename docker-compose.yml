@@ -1,0 +1,20 @@
+services:
+  portal:
+    build: .
+    image: bedrock-portal:latest
+    container_name: bedrock-portal
+    ports:
+      - "127.0.0.1:8787:8787"   # localhost only; put a TLS reverse proxy in front before exposing it
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AWS_SHARED_CREDENTIALS_FILE: /aws/credentials
+      AWS_CONFIG_FILE: /aws/config
+    volumes:
+      - portal-data:/data
+      - ${HOME:-${USERPROFILE}}/.aws:/aws:ro   # source credentials / profiles (read-only)
+    restart: unless-stopped
+
+volumes:
+  portal-data:

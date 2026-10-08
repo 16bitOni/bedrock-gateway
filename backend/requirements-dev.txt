@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+openai>=1.50
+anthropic>=0.40

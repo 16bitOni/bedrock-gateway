@@ -1,0 +1,105 @@
+# Builds the click-to-open desktop app and attaches it to a GitHub Release.
+#   Release:  git tag v1.0.0 && git push origin v1.0.0
+#   Manual:   Actions → "Desktop app" → Run workflow (artifacts only, no release)
+name: Desktop app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Bedrock-Portal-Windows
+          - os: macos-latest
+            artifact: Bedrock-Portal-macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build dashboard
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt "pywebview>=5" "pyinstaller>=6.10"
+
+      - name: Run tests
+        run: |
+          pip install pytest "openai>=1.50" "anthropic>=0.40"
+          cd backend && python -m pytest -q tests
+
+      - name: Build app
+        run: pyinstaller packaging/bedrock-portal.spec --noconfirm
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Bedrock Portal.exe" -ArgumentList "--headless","--port","8899" -PassThru
+          $ok = $false
+          foreach ($i in 1..60) { try { $r = Invoke-RestMethod http://127.0.0.1:8899/health; if ($r.ok) { $ok = $true; break } } catch {}; Start-Sleep 1 }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "packaged app did not start" }
+
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          "dist/Bedrock Portal.app/Contents/MacOS/Bedrock Portal" --headless --port 8899 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8899/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:8899/health
+          kill %1 || true
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "../${{ matrix.artifact }}.zip" "Bedrock Portal.exe"
+          else
+            ditto -c -k --keepParent "Bedrock Portal.app" "../${{ matrix.artifact }}.zip"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.zip
+          generate_release_notes: true
+          body: |
+            **Download, unzip, double-click.** No Python or Node needed.
+            - Windows: `Bedrock-Portal-Windows.zip` → `Bedrock Portal.exe`. SmartScreen may warn because the app isn't code-signed: *More info → Run anyway*.
+            - macOS: `Bedrock-Portal-macOS.zip` → `Bedrock Portal.app`. First launch: right-click → Open (unsigned app).
+            Your data stays on your machine (`%APPDATA%\BedrockPortal` / `~/Library/Application Support/BedrockPortal`).

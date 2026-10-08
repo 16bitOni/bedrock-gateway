@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Bedrock Portal - IAM role the gateway assumes to call Amazon Bedrock, Polly,
+  Transcribe and Cost Explorer. Deploy once per AWS account (any region; IAM is global).
+
+Parameters:
+  ExternalId:
+    Type: String
+    MinLength: 8
+    Description: The External ID shown in the Portal (Settings > AWS). Protects the role from confused-deputy use.
+  TrustedPrincipalArn:
+    Type: String
+    Default: ""
+    Description: >
+      Who may assume the role. Leave empty to trust any IAM principal in THIS account that has
+      sts:AssumeRole permission (typical for a personal setup). For a cross-account setup, enter the
+      ARN of the user/role in the other account (e.g. arn:aws:iam::111122223333:user/me).
+  RoleName:
+    Type: String
+    Default: BedrockPortalRole
+  AllowBilling:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Allow Cost Explorer + Billing credits read access (powers the Billing page).
+  TranscribeBucketName:
+    Type: String
+    Default: ""
+    Description: Optional. Name of an S3 bucket to create for Amazon Transcribe (model `aws-transcribe`). Leave empty to skip.
+  CreateRunnerUser:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      Optional. Create an IAM user whose only permission is to assume this role, with an access key
+      (shown in Outputs). Use it as the source credentials on the machine running the Portal if you
+      don't already have an AWS CLI profile there.
+
+Conditions:
+  TrustThisAccount: !Equals [!Ref TrustedPrincipalArn, ""]
+  WithBilling: !Equals [!Ref AllowBilling, "true"]
+  WithBucket: !Not [!Equals [!Ref TranscribeBucketName, ""]]
+  WithRunner: !Equals [!Ref CreateRunnerUser, "true"]
+
+Resources:
+  PortalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !If
+                - TrustThisAccount
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+                - !Ref TrustedPrincipalArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: BedrockPortalAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeModels
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:::foundation-model/*"
+              - Sid: Catalog
+                Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                  - bedrock:GetFoundationModelAvailability
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:GetInferenceProfile
+                  - bedrock:CountTokens
+                  - bedrock:Rerank
+                  - bedrock:ApplyGuardrail
+                  - bedrock:GetUseCaseForModelAccess
+                Resource: "*"
+              - Sid: MarketplaceFirstUse
+                Effect: Allow
+                Action:
+                  - aws-marketplace:ViewSubscriptions
+                  - aws-marketplace:Subscribe
+                Resource: "*"
+              - Sid: Voice
+                Effect: Allow
+                Action:
+                  - polly:SynthesizeSpeech
+                  - polly:DescribeVoices
+                  - transcribe:StartTranscriptionJob
+                  - transcribe:GetTranscriptionJob
+                  - transcribe:DeleteTranscriptionJob
+                Resource: "*"
+              - Sid: Identity
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+
+  BillingPolicy:
+    Type: AWS::IAM::RolePolicy
+    Condition: WithBilling
+    Properties:
+      RoleName: !Ref PortalRole
+      PolicyName: BedrockPortalBilling
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ce:GetCostAndUsage
+              - ce:GetDimensionValues
+              - billing:GetCredits
+            Resource: "*"
+
+  TranscribeBucket:
+    Type: AWS::S3::Bucket
+    Condition: WithBucket
+    Properties:
+      BucketName: !Ref TranscribeBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-temp-audio
+            Status: Enabled
+            ExpirationInDays: 1
+            Prefix: bedrock-portal/
+
+  TranscribeBucketPolicy:
+    Type: AWS::IAM::RolePolicy
+    Condition: WithBucket
+    Properties:
+      RoleName: !Ref PortalRole
+      PolicyName: BedrockPortalTranscribeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${TranscribeBucketName}/bedrock-portal/*"
+
+  RunnerUser:
+    Type: AWS::IAM::User
+    Condition: WithRunner
+    Properties:
+      UserName: !Sub "${RoleName}-runner"
+      Policies:
+        - PolicyName: AssumePortalRoleOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt PortalRole.Arn
+
+  RunnerAccessKey:
+    Type: AWS::IAM::AccessKey
+    Condition: WithRunner
+    Properties:
+      UserName: !Ref RunnerUser
+
+Outputs:
+  RoleArn:
+    Description: Paste this into Portal > Settings > AWS > Role ARN
+    Value: !GetAtt PortalRole.Arn
+  ExternalId:
+    Value: !Ref ExternalId
+  TranscribeBucket:
+    Condition: WithBucket
+    Description: Paste into Portal > Settings > Voice > Transcribe S3 bucket
+    Value: !Ref TranscribeBucket
+  RunnerAccessKeyId:
+    Condition: WithRunner
+    Description: Source credentials for the machine running the Portal (aws configure --profile bedrock-portal)
+    Value: !Ref RunnerAccessKey
+  RunnerSecretAccessKey:
+    Condition: WithRunner
+    Description: Treat as a secret. Visible to anyone who can read this stack's outputs.
+    Value: !GetAtt RunnerAccessKey.SecretAccessKey
