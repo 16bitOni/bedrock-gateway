@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Bedrock Portal
 
 A personal AI gateway for Amazon Bedrock. Set up AWS permissions once. After that, every Bedrock model (Claude, Nova, Llama, gpt-oss, DeepSeek, Mistral, Qwen, Cohere and others), plus Polly voices and Transcribe, works behind one **OpenAI-compatible** and **Anthropic-compatible** URL with your own API keys. A dashboard covers spend, credits, logs and a playground.
@@ -168,6 +167,3 @@ cd frontend && npm install && npm run dev                                       
 Desktop launcher: `backend/desktop.py`, packaged by `packaging/bedrock-portal.spec` (PyInstaller) and `.github/workflows/release.yml`.
 
 Layout: `backend/app` (FastAPI: `translate.py` is the OpenAI↔Converse layer, `catalog.py` handles models, aliases and resolution, `routes/` has the endpoints) · `frontend/src` (React + Vite) · `infra/` (CloudFormation) · `scripts/` (launchers).
-=======
-# bedrock-gateway
->>>>>>> 965d656aa595a05d05251b42116e1abd15050718
